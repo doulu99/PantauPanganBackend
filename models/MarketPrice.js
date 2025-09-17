@@ -1,3 +1,4 @@
+// models/MarketPrice.js - Updated version
 const { DataTypes } = require('sequelize');
 const sequelize = require('../config/database');
 
@@ -11,9 +12,14 @@ const MarketPrice = sequelize.define('MarketPrice', {
     type: DataTypes.INTEGER,
     allowNull: false
   },
+  commodity_source: {
+    type: DataTypes.ENUM(['national', 'custom']),
+    allowNull: false,
+    defaultValue: 'national'
+  },
   source_id: {
     type: DataTypes.INTEGER,
-    allowNull: false
+    allowNull: true // Make nullable for custom commodities
   },
   market_name: {
     type: DataTypes.STRING,
@@ -62,7 +68,18 @@ const MarketPrice = sequelize.define('MarketPrice', {
   }
 }, {
   timestamps: true,
-  tableName: 'market_prices'
+  tableName: 'market_prices',
+  indexes: [
+    {
+      fields: ['commodity_id', 'date']
+    },
+    {
+      fields: ['commodity_source']
+    },
+    {
+      fields: ['market_name']
+    }
+  ]
 });
 
 module.exports = MarketPrice;
