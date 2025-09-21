@@ -19,6 +19,7 @@ app.use(express.json({ limit: '10mb' }));
 app.use(express.urlencoded({ extended: true, limit: '10mb' }));
 app.use(morgan('dev'));
 
+
 // Global error handler middleware
 const globalErrorHandler = (err, req, res, next) => {
   console.error('🚨 Global Error:', {
@@ -123,15 +124,17 @@ const loadRoutes = () => {
     console.warn('⚠️ Region routes failed to load:', error.message);
   }
 
+ // Market Price Routes - ADD THIS
   try {
     const marketPriceRoutes = require('./routes/marketPriceRoutes');
     app.use('/api/market-prices', marketPriceRoutes);
     console.log('✅ Market price routes loaded');
   } catch (error) {
     console.warn('⚠️ Market price routes failed to load:', error.message);
-    // Add fallback route for market prices
+    
+    // Fallback route
     app.use('/api/market-prices', (req, res) => {
-      res.status(503).json({
+      res.json({
         success: false,
         message: 'Market price service temporarily unavailable',
         error: 'Routes not loaded properly'
