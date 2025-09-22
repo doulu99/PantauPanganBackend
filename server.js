@@ -19,6 +19,7 @@ app.use(
       "http://localhost:3000",
       "http://localhost:3001",
       "http://localhost:5173",
+      "http://localhost:5000", // biar frontend yg digabung tetap jalan
     ],
     credentials: true,
   })
@@ -60,7 +61,7 @@ app.get("/health", (req, res) => {
   });
 });
 
-// Routes
+// Routes (API)
 const authRoutes = require("./routes/authRoutes");
 const bpnRoutes = require("./routes/bpnRoutes");
 const marketPriceRoutes = require("./routes/marketPrices");
@@ -75,6 +76,12 @@ app.use("/api/bpn", bpnRoutes);
 app.use("/api/market-prices", marketPriceRoutes);
 app.use("/api/regions", regionRoutes);
 app.use("/api/overrides", overrideRoutes);
+
+// ✅ Serve frontend build (Vite) → letakkan sebelum handler 404
+app.use(express.static(path.join(__dirname, "dist")));
+app.get("*", (req, res) => {
+  res.sendFile(path.resolve(__dirname, "dist", "index.html"));
+});
 
 // 404 handler
 app.use((req, res) => {
