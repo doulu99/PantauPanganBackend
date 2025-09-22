@@ -1,48 +1,23 @@
-// models/AuditLog.js
-const { DataTypes } = require('sequelize');
-const sequelize = require('../config/database');
+const { DataTypes, Model } = require("sequelize");
+const sequelize = require("../config/database");
 
-const AuditLog = sequelize.define('AuditLog', {
-  id: {
-    type: DataTypes.INTEGER,
-    primaryKey: true,
-    autoIncrement: true
+class AuditLog extends Model {}
+
+AuditLog.init(
+  {
+    user_id: DataTypes.INTEGER,
+    action: DataTypes.STRING,
+    entity_type: DataTypes.STRING,
+    entity_id: DataTypes.INTEGER,
+    ip_address: DataTypes.STRING,
+    user_agent: DataTypes.STRING,
   },
-  user_id: {
-    type: DataTypes.INTEGER,
-    allowNull: true
-  },
-  action: {
-    type: DataTypes.STRING,
-    allowNull: false
-  },
-  entity_type: {
-    type: DataTypes.STRING,
-    allowNull: false
-  },
-  entity_id: {
-    type: DataTypes.INTEGER,
-    allowNull: false
-  },
-  old_values: {
-    type: DataTypes.JSON,
-    allowNull: true
-  },
-  new_values: {
-    type: DataTypes.JSON,
-    allowNull: true
-  },
-  ip_address: {
-    type: DataTypes.STRING,
-    allowNull: true
-  },
-  user_agent: {
-    type: DataTypes.STRING,
-    allowNull: true
+  {
+    sequelize,
+    modelName: "AuditLog",
+    tableName: "audit_logs",
+    underscored: true,
   }
-}, {
-  timestamps: true,
-  tableName: 'audit_logs'
-});
+);
 
 module.exports = AuditLog;
