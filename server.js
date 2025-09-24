@@ -1,5 +1,5 @@
 // ==========================================
-// server.js - COMPLETE UPDATE dengan Google Sheets Auto Sync
+// server.js - COMPLETE UPDATE dengan Google Sheets Auto Sync + BPN Integration
 // ==========================================
 const express = require("express");
 const cors = require("cors");
@@ -67,6 +67,10 @@ app.get("/health", (req, res) => {
       configured: !!(process.env.GOOGLE_SHEETS_API_KEY && process.env.GOOGLE_SHEET_ID),
       sheet_id: process.env.GOOGLE_SHEET_ID,
       sync_interval_hours: process.env.SYNC_INTERVAL_HOURS || 6
+    },
+    bpn_integration: {
+      enabled: true,
+      cache_duration_minutes: 30
     }
   });
 });
@@ -89,6 +93,9 @@ const sembakoPriceRoutes = require("./routes/sembakoPrice");
 // NEW: Google Sheets routes
 const googleSheetRoutes = require("./routes/googleSheetSync");
 
+// NEW: BPN Data routes
+const bpnDataRoutes = require("./routes/bpnData");
+
 // ==========================================
 // ROUTES SETUP
 // ==========================================
@@ -98,7 +105,7 @@ app.use("/public/market-prices", marketPricePublicRoutes);
 
 // API routes dengan authentication
 app.use("/api/auth", authRoutes);
-app.use("/api/bpn", bpnRoutes);
+app.use("/api/bpn-legacy", bpnRoutes); // Legacy BPN routes
 app.use("/api/market-prices", marketPriceRoutes);
 app.use("/api/regions", regionRoutes);
 app.use("/api/overrides", overrideRoutes);
@@ -106,27 +113,31 @@ app.use("/api/overrides", overrideRoutes);
 // Sembako API routes
 app.use("/api/sembako", sembakoPriceRoutes);
 
-// NEW: Google Sheets sync routes
+// Google Sheets sync routes
 app.use("/api/google-sheet", googleSheetRoutes);
+
+// NEW: BPN Data Integration routes
+app.use("/api/bpn", bpnDataRoutes);
 
 // ==========================================
 // ADDITIONAL API ENDPOINTS
 // ==========================================
 
-// API Info endpoint dengan Google Sheets info
+// API Info endpoint dengan Google Sheets dan BPN info
 app.get("/api/info", (req, res) => {
   res.json({
     success: true,
-    message: "Pantau Pangan API with Google Sheets Integration",
-    version: "2.1.0",
+    message: "Pantau Pangan API with Google Sheets & BPN Integration",
+    version: "2.2.0",
     endpoints: {
       auth: "/api/auth",
-      bpn: "/api/bpn", 
+      bpn_data: "/api/bpn", // NEW: BPN Data Integration
+      bpn_legacy: "/api/bpn-legacy", // Legacy BPN
       market_prices: "/api/market-prices",
       regions: "/api/regions",
       overrides: "/api/overrides",
       sembako: "/api/sembako",
-      google_sheets: "/api/google-sheet", // NEW
+      google_sheets: "/api/google-sheet",
       public: {
         market_prices: "/public/market-prices",
         sembako_stats: "/api/sembako/public/statistics",
@@ -137,7 +148,8 @@ app.get("/api/info", (req, res) => {
       market_prices: "Individual commodity prices",
       sembako: "9 basic food commodities tracking",
       csv_import: "Google Form/Sheet CSV import",
-      google_sheets_sync: "Automatic Google Sheets synchronization", // NEW
+      google_sheets_sync: "Automatic Google Sheets synchronization",
+      bpn_integration: "Real-time BPN price comparison", // NEW
       statistics: "Analytics and trends",
       export: "CSV data export"
     },
@@ -146,25 +158,47 @@ app.get("/api/info", (req, res) => {
       sheet_id: process.env.GOOGLE_SHEET_ID || "Not configured",
       sync_interval_hours: parseInt(process.env.SYNC_INTERVAL_HOURS) || 6,
       range: process.env.GOOGLE_SHEET_RANGE || "Form Responses 1!A:N"
+    },
+    bpn_integration: {
+      enabled: true,
+      cache_duration_minutes: 30,
+      endpoints: {
+        prices: "/api/bpn/prices",
+        comparison: "/api/bpn/comparison",
+        trends: "/api/bpn/trends"
+      }
     }
   });
 });
 
-// Combined statistics endpoint (include Google Sheets data)
+// Combined statistics endpoint (include Google Sheets dan BPN data)
 app.get("/api/combined/statistics", async (req, res) => {
   try {
     const MarketPrice = require("./models/MarketPrice");
     const SembakoPrice = require("./models/SembakoPrice");
+    const axios = require("axios");
 
+    // Get database counts
     const [marketCount, sembakoCount, googleSheetCount] = await Promise.all([
       MarketPrice.count(),
       SembakoPrice.count(),
       SembakoPrice.count({ where: { source: 'google_sheet' } })
     ]);
 
+    // Try to get BPN data count
+    let bpnCount = 0;
+    try {
+      const bpnResponse = await axios.get('https://panelharga.badanpangan.go.id/api/nasional/get_data_nasional', {
+        timeout: 5000
+      });
+      bpnCount = bpnResponse.data?.data?.length || 0;
+    } catch (bpnError) {
+      console.log('BPN data not available for statistics');
+    }
+
     res.json({
       success: true,
-      message: "Combined statistics with Google Sheets data",
+      message: "Combined statistics with Google Sheets and BPN data",
       data: {
         market_prices: {
           total_records: marketCount,
@@ -176,11 +210,17 @@ app.get("/api/combined/statistics", async (req, res) => {
           google_sheet_records: googleSheetCount,
           manual_records: sembakoCount - googleSheetCount
         },
-        combined_total: marketCount + sembakoCount,
+        bpn_data: {
+          total_commodities: bpnCount,
+          type: "official_government_prices",
+          source: "Badan Pangan Nasional"
+        },
+        combined_total: marketCount + sembakoCount + bpnCount,
         data_sources: {
           google_sheets: googleSheetCount,
           manual_input: (sembakoCount - googleSheetCount),
-          bpn_data: marketCount
+          bpn_official: bpnCount,
+          market_data: marketCount
         },
         last_updated: new Date().toISOString()
       }
@@ -191,6 +231,58 @@ app.get("/api/combined/statistics", async (req, res) => {
       success: false,
       message: "Gagal mengambil combined statistics",
       error: error.message
+    });
+  }
+});
+
+// NEW: Quick comparison endpoint
+app.get("/api/quick-comparison", async (req, res) => {
+  try {
+    const SembakoPrice = require("./models/SembakoPrice");
+    const axios = require("axios");
+
+    // Get internal averages
+    const internalStats = await SembakoPrice.findAll({
+      attributes: [
+        [SembakoPrice.sequelize.fn('AVG', SembakoPrice.sequelize.col('harga_beras')), 'avg_beras'],
+        [SembakoPrice.sequelize.fn('AVG', SembakoPrice.sequelize.col('harga_gula')), 'avg_gula'],
+        [SembakoPrice.sequelize.fn('AVG', SembakoPrice.sequelize.col('harga_minyak')), 'avg_minyak'],
+        [SembakoPrice.sequelize.fn('AVG', SembakoPrice.sequelize.col('harga_daging')), 'avg_daging'],
+        [SembakoPrice.sequelize.fn('AVG', SembakoPrice.sequelize.col('harga_ayam')), 'avg_ayam'],
+        [SembakoPrice.sequelize.fn('AVG', SembakoPrice.sequelize.col('harga_telur')), 'avg_telur'],
+      ],
+      raw: true
+    });
+
+    // Get BPN data
+    const bpnResponse = await axios.get('https://panelharga.badanpangan.go.id/api/nasional/get_data_nasional', {
+      timeout: 10000
+    });
+
+    const quickComparison = {
+      internal_data_points: Object.keys(internalStats[0]).length,
+      bpn_data_points: bpnResponse.data?.data?.length || 0,
+      comparison_available: true,
+      last_updated: new Date().toISOString()
+    };
+
+    res.json({
+      success: true,
+      message: "Quick comparison overview",
+      data: quickComparison
+    });
+
+  } catch (error) {
+    console.error("Quick comparison error:", error);
+    res.json({
+      success: true,
+      message: "Quick comparison overview",
+      data: {
+        internal_data_points: 0,
+        bpn_data_points: 0,
+        comparison_available: false,
+        error: "BPN data temporarily unavailable"
+      }
     });
   }
 });
@@ -222,13 +314,16 @@ app.use('/api/*', (req, res) => {
     requested_path: req.path,
     available_endpoints: [
       "/api/auth",
-      "/api/bpn",
+      "/api/bpn", // NEW: BPN Data
+      "/api/bpn-legacy", // Legacy
       "/api/market-prices", 
       "/api/regions",
       "/api/overrides",
       "/api/sembako",
-      "/api/google-sheet", // NEW
-      "/api/info"
+      "/api/google-sheet",
+      "/api/info",
+      "/api/combined/statistics",
+      "/api/quick-comparison" // NEW
     ]
   });
 });
@@ -255,7 +350,7 @@ app.use((req, res) => {
   });
 });
 
-// Global Error handler dengan Google Sheets error handling
+// Global Error handler dengan Google Sheets dan BPN error handling
 app.use((err, req, res, next) => {
   console.error("Server error:", err);
   
@@ -282,6 +377,15 @@ app.use((err, req, res, next) => {
     return res.status(503).json({
       success: false,
       message: "Google Sheets service error",
+      error: process.env.NODE_ENV === 'development' ? err.message : 'External service error'
+    });
+  }
+
+  // Handle BPN API errors
+  if (err.message.includes('BPN') || err.message.includes('panelharga.badanpangan.go.id')) {
+    return res.status(503).json({
+      success: false,
+      message: "BPN service temporarily unavailable",
       error: process.env.NODE_ENV === 'development' ? err.message : 'External service error'
     });
   }
@@ -317,25 +421,40 @@ app.listen(PORT, async () => {
   console.log(`   • Export CSV: http://localhost:${PORT}/api/sembako/export/csv`);
   console.log(`   • Trends: http://localhost:${PORT}/api/sembako/analysis/trends`);
   
-  // NEW: Google Sheets endpoints logging
+  // Google Sheets endpoints logging
   console.log(`\n📋 GOOGLE SHEETS SYNC ENDPOINTS:`);
   console.log(`   • Manual Sync: http://localhost:${PORT}/api/google-sheet/sync`);
   console.log(`   • Sheet Info: http://localhost:${PORT}/api/google-sheet/info`);
   console.log(`   • Test Connection: http://localhost:${PORT}/api/google-sheet/test`);
   console.log(`   • Sync Status: http://localhost:${PORT}/api/google-sheet/status`);
   
+  // NEW: BPN endpoints logging
+  console.log(`\n🏛️ BPN DATA INTEGRATION ENDPOINTS:`);
+  console.log(`   • BPN Prices: http://localhost:${PORT}/api/bpn/prices`);
+  console.log(`   • Price Comparison: http://localhost:${PORT}/api/bpn/comparison`);
+  console.log(`   • Trends Analysis: http://localhost:${PORT}/api/bpn/trends`);
+  console.log(`   • Cache Status: http://localhost:${PORT}/api/bpn/cache/status`);
+  console.log(`   • Clear Cache: http://localhost:${PORT}/api/bpn/cache/clear`);
+  
   console.log(`\n🔗 OTHER ENDPOINTS:`);
   console.log(`   • API Info: http://localhost:${PORT}/api/info`);
   console.log(`   • Combined Stats: http://localhost:${PORT}/api/combined/statistics`);
+  console.log(`   • Quick Comparison: http://localhost:${PORT}/api/quick-comparison`);
   
   // Google Sheets configuration check
   const hasGoogleSheetsConfig = !!(process.env.GOOGLE_SHEETS_API_KEY && process.env.GOOGLE_SHEET_ID);
   
-  console.log(`\n🔧 GOOGLE SHEETS CONFIGURATION:`);
+  console.log(`\n🔧 CONFIGURATION STATUS:`);
+  console.log(`   📋 GOOGLE SHEETS:`);
   console.log(`   • API Key: ${process.env.GOOGLE_SHEETS_API_KEY ? '✅ Configured' : '❌ Missing'}`);
   console.log(`   • Sheet ID: ${process.env.GOOGLE_SHEET_ID ? '✅ Configured' : '❌ Missing'}`);
   console.log(`   • Range: ${process.env.GOOGLE_SHEET_RANGE || 'Form Responses 1!A:N'}`);
   console.log(`   • Sync Interval: ${process.env.SYNC_INTERVAL_HOURS || 6} hours`);
+  
+  console.log(`   🏛️ BPN INTEGRATION:`);
+  console.log(`   • Status: ✅ Enabled`);
+  console.log(`   • Cache Duration: 30 minutes`);
+  console.log(`   • Fallback: ✅ Cache available when API down`);
   
   if (hasGoogleSheetsConfig) {
     // Start scheduled sync only if properly configured
@@ -360,11 +479,13 @@ app.listen(PORT, async () => {
   
   console.log(`\n💡 QUICK TEST COMMANDS:`);
   console.log(`   curl http://localhost:${PORT}/api/sembako/public/statistics`);
+  console.log(`   curl http://localhost:${PORT}/api/bpn/prices`);
+  console.log(`   curl http://localhost:${PORT}/api/quick-comparison`);
   if (hasGoogleSheetsConfig) {
     console.log(`   curl http://localhost:${PORT}/api/google-sheet/status`);
   }
   
   console.log(`\n🌐 Environment: ${process.env.NODE_ENV || 'development'}`);
   console.log(`📊 Database: ${process.env.DB_NAME || 'Not configured'}`);
-  console.log(`🚀 Server ready for requests!\n`);
+  console.log(`🚀 Server ready for requests with BPN Integration!\n`);
 });
